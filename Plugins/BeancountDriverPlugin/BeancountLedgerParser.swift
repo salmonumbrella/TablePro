@@ -11,6 +11,16 @@ struct BeancountLedger: Sendable {
     let accounts: [BeancountAccount]
     let prices: [BeancountPrice]
     let balances: [BeancountBalance]
+    let commodities: [BeancountCommodity]
+    let documents: [BeancountDocument]
+    let notes: [BeancountNote]
+    let events: [BeancountEvent]
+    let pads: [BeancountPad]
+    let closes: [BeancountClose]
+    let transactionMetadata: [BeancountTransactionMetadata]
+    let postingMetadata: [BeancountPostingMetadata]
+    let transactionTags: [BeancountTransactionTag]
+    let transactionLinks: [BeancountTransactionLink]
     let sourceFiles: [URL]
     let watchedDirectories: [URL]
 }
@@ -23,6 +33,8 @@ struct BeancountTransaction: Sendable {
     let narration: String?
     let sourceFile: URL
     let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
 }
 
 struct BeancountPosting: Sendable {
@@ -34,6 +46,8 @@ struct BeancountPosting: Sendable {
     let commodity: String?
     let sourceFile: URL
     let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
 }
 
 struct BeancountAccount: Sendable {
@@ -42,6 +56,8 @@ struct BeancountAccount: Sendable {
     let currencies: String?
     let sourceFile: URL
     let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
 }
 
 struct BeancountPrice: Sendable {
@@ -52,6 +68,8 @@ struct BeancountPrice: Sendable {
     let currency: String
     let sourceFile: URL
     let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
 }
 
 struct BeancountBalance: Sendable {
@@ -62,6 +80,107 @@ struct BeancountBalance: Sendable {
     let commodity: String
     let sourceFile: URL
     let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
+}
+
+struct BeancountCommodity: Sendable {
+    let id: Int
+    let date: String
+    let commodity: String
+    let sourceFile: URL
+    let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
+}
+
+struct BeancountDocument: Sendable {
+    let id: Int
+    let date: String
+    let account: String
+    let filename: String
+    let sourceFile: URL
+    let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
+}
+
+struct BeancountNote: Sendable {
+    let id: Int
+    let date: String
+    let account: String
+    let comment: String
+    let sourceFile: URL
+    let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
+}
+
+struct BeancountEvent: Sendable {
+    let id: Int
+    let date: String
+    let name: String
+    let value: String
+    let sourceFile: URL
+    let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
+}
+
+struct BeancountPad: Sendable {
+    let id: Int
+    let date: String
+    let account: String
+    let sourceAccount: String
+    let sourceFile: URL
+    let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
+}
+
+struct BeancountClose: Sendable {
+    let id: Int
+    let date: String
+    let account: String
+    let sourceFile: URL
+    let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
+}
+
+struct BeancountTransactionMetadata: Sendable {
+    let id: Int
+    let transactionId: Int
+    let key: String
+    let value: String?
+    let sourceFile: URL
+    let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
+}
+
+struct BeancountPostingMetadata: Sendable {
+    let id: Int
+    let postingId: Int
+    let transactionId: Int
+    let key: String
+    let value: String?
+    let sourceFile: URL
+    let line: Int
+
+    var sourceLocation: String { "\(sourceFile.path):\(line)" }
+}
+
+struct BeancountTransactionTag: Sendable {
+    let id: Int
+    let transactionId: Int
+    let tag: String
+}
+
+struct BeancountTransactionLink: Sendable {
+    let id: Int
+    let transactionId: Int
+    let link: String
 }
 
 enum BeancountParserError: LocalizedError {
@@ -87,7 +206,18 @@ final class BeancountLedgerParser {
     private var accountsByName: [String: BeancountAccount] = [:]
     private var prices: [BeancountPrice] = []
     private var balances: [BeancountBalance] = []
+    private var commodities: [BeancountCommodity] = []
+    private var documents: [BeancountDocument] = []
+    private var notes: [BeancountNote] = []
+    private var events: [BeancountEvent] = []
+    private var pads: [BeancountPad] = []
+    private var closes: [BeancountClose] = []
+    private var transactionMetadata: [BeancountTransactionMetadata] = []
+    private var postingMetadata: [BeancountPostingMetadata] = []
+    private var transactionTags: [BeancountTransactionTag] = []
+    private var transactionLinks: [BeancountTransactionLink] = []
     private var watchedDirectories: Set<URL> = []
+    private var activeTags: Set<String> = []
 
     func parse(fileURL: URL) throws -> BeancountLedger {
         visited.removeAll()
@@ -98,7 +228,18 @@ final class BeancountLedgerParser {
         accountsByName.removeAll()
         prices.removeAll()
         balances.removeAll()
+        commodities.removeAll()
+        documents.removeAll()
+        notes.removeAll()
+        events.removeAll()
+        pads.removeAll()
+        closes.removeAll()
+        transactionMetadata.removeAll()
+        postingMetadata.removeAll()
+        transactionTags.removeAll()
+        transactionLinks.removeAll()
         watchedDirectories.removeAll()
+        activeTags.removeAll()
 
         try parseFile(fileURL.standardizedFileURL)
 
@@ -108,6 +249,16 @@ final class BeancountLedgerParser {
             accounts: accountsByName.values.sorted { $0.name < $1.name },
             prices: prices,
             balances: balances,
+            commodities: commodities,
+            documents: documents,
+            notes: notes,
+            events: events,
+            pads: pads,
+            closes: closes,
+            transactionMetadata: transactionMetadata,
+            postingMetadata: postingMetadata,
+            transactionTags: transactionTags,
+            transactionLinks: transactionLinks,
             sourceFiles: sourceFiles,
             watchedDirectories: watchedDirectories.sorted { $0.path < $1.path }
         )
@@ -143,6 +294,15 @@ final class BeancountLedgerParser {
 
             guard !trimmed.isEmpty else { continue }
 
+            if let tag = parseTagStackDirective(trimmed, keyword: "pushtag") {
+                activeTags.insert(tag)
+                continue
+            }
+            if let tag = parseTagStackDirective(trimmed, keyword: "poptag") {
+                activeTags.remove(tag)
+                continue
+            }
+
             if let includePath = parseInclude(trimmed) {
                 let includeURLs = try resolveIncludeURLs(
                     includePath,
@@ -163,6 +323,18 @@ final class BeancountLedgerParser {
                 parsePrice(remainder: remainder, date: date, sourceFile: normalized, line: lineNumber)
             } else if remainder.hasPrefix("balance ") {
                 parseBalance(remainder: remainder, date: date, sourceFile: normalized, line: lineNumber)
+            } else if remainder.hasPrefix("commodity ") {
+                parseCommodity(remainder: remainder, date: date, sourceFile: normalized, line: lineNumber)
+            } else if remainder.hasPrefix("document ") {
+                parseDocument(remainder: remainder, date: date, sourceFile: normalized, line: lineNumber)
+            } else if remainder.hasPrefix("note ") {
+                parseNote(remainder: remainder, date: date, sourceFile: normalized, line: lineNumber)
+            } else if remainder.hasPrefix("event ") {
+                parseEvent(remainder: remainder, date: date, sourceFile: normalized, line: lineNumber)
+            } else if remainder.hasPrefix("pad ") {
+                parsePad(remainder: remainder, date: date, sourceFile: normalized, line: lineNumber)
+            } else if remainder.hasPrefix("close ") {
+                parseClose(remainder: remainder, date: date, sourceFile: normalized, line: lineNumber)
             } else if let flag = remainder.first, flag == "*" || flag == "!" {
                 let transactionId = transactions.count + 1
                 let transaction = parseTransaction(
@@ -173,20 +345,64 @@ final class BeancountLedgerParser {
                     line: lineNumber
                 )
                 transactions.append(transaction)
+                for tag in activeTags.union(parseMarkers(in: remainder, prefix: "#")).sorted() {
+                    transactionTags.append(BeancountTransactionTag(
+                        id: transactionTags.count + 1,
+                        transactionId: transactionId,
+                        tag: tag
+                    ))
+                }
+                for link in parseMarkers(in: remainder, prefix: "^") {
+                    transactionLinks.append(BeancountTransactionLink(
+                        id: transactionLinks.count + 1,
+                        transactionId: transactionId,
+                        link: link
+                    ))
+                }
 
                 var postingIndex = index + 1
+                var currentPostingId: Int?
+                var currentPostingIndent = 0
                 while postingIndex < lines.count {
                     let postingLine = lines[postingIndex]
                     guard postingLine.first?.isWhitespace == true else { break }
-                    if let posting = parsePosting(
+                    let postingLineNumber = postingIndex + 1
+                    let postingIndent = leadingWhitespaceCount(postingLine)
+                    let postingTrimmed = stripComment(postingLine).trimmingCharacters(in: .whitespaces)
+                    if let metadata = parseMetadata(postingTrimmed) {
+                        if let postingId = currentPostingId, postingIndent > currentPostingIndent {
+                            postingMetadata.append(BeancountPostingMetadata(
+                                id: postingMetadata.count + 1,
+                                postingId: postingId,
+                                transactionId: transactionId,
+                                key: metadata.key,
+                                value: metadata.value,
+                                sourceFile: normalized,
+                                line: postingLineNumber
+                            ))
+                        } else {
+                            transactionMetadata.append(BeancountTransactionMetadata(
+                                id: transactionMetadata.count + 1,
+                                transactionId: transactionId,
+                                key: metadata.key,
+                                value: metadata.value,
+                                sourceFile: normalized,
+                                line: postingLineNumber
+                            ))
+                            currentPostingId = nil
+                            currentPostingIndent = 0
+                        }
+                    } else if let posting = parsePosting(
                         postingLine,
                         id: postings.count + 1,
                         transactionId: transactionId,
                         date: date,
                         sourceFile: normalized,
-                        line: postingIndex + 1
+                        line: postingLineNumber
                     ) {
                         postings.append(posting)
+                        currentPostingId = posting.id
+                        currentPostingIndent = postingIndent
                     }
                     postingIndex += 1
                 }
@@ -361,6 +577,85 @@ final class BeancountLedgerParser {
         ))
     }
 
+    private func parseCommodity(remainder: String, date: String, sourceFile: URL, line: Int) {
+        let parts = remainder.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard parts.count >= 2 else { return }
+        commodities.append(BeancountCommodity(
+            id: commodities.count + 1,
+            date: date,
+            commodity: parts[1],
+            sourceFile: sourceFile,
+            line: line
+        ))
+    }
+
+    private func parseDocument(remainder: String, date: String, sourceFile: URL, line: Int) {
+        let parts = remainder.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard parts.count >= 3 else { return }
+        let filename = quotedStrings(in: remainder).first ?? parts[2]
+        documents.append(BeancountDocument(
+            id: documents.count + 1,
+            date: date,
+            account: parts[1],
+            filename: filename,
+            sourceFile: sourceFile,
+            line: line
+        ))
+    }
+
+    private func parseNote(remainder: String, date: String, sourceFile: URL, line: Int) {
+        let parts = remainder.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard parts.count >= 3 else { return }
+        let comment = quotedStrings(in: remainder).first ?? parts.dropFirst(2).joined(separator: " ")
+        notes.append(BeancountNote(
+            id: notes.count + 1,
+            date: date,
+            account: parts[1],
+            comment: comment,
+            sourceFile: sourceFile,
+            line: line
+        ))
+    }
+
+    private func parseEvent(remainder: String, date: String, sourceFile: URL, line: Int) {
+        let quoted = quotedStrings(in: remainder)
+        let parts = remainder.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard quoted.count >= 2 || parts.count >= 3 else { return }
+        events.append(BeancountEvent(
+            id: events.count + 1,
+            date: date,
+            name: quoted.count >= 2 ? quoted[0] : parts[1],
+            value: quoted.count >= 2 ? quoted[1] : parts.dropFirst(2).joined(separator: " "),
+            sourceFile: sourceFile,
+            line: line
+        ))
+    }
+
+    private func parsePad(remainder: String, date: String, sourceFile: URL, line: Int) {
+        let parts = remainder.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard parts.count >= 3 else { return }
+        pads.append(BeancountPad(
+            id: pads.count + 1,
+            date: date,
+            account: parts[1],
+            sourceAccount: parts[2],
+            sourceFile: sourceFile,
+            line: line
+        ))
+    }
+
+    private func parseClose(remainder: String, date: String, sourceFile: URL, line: Int) {
+        let parts = remainder.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard parts.count >= 2 else { return }
+        closes.append(BeancountClose(
+            id: closes.count + 1,
+            date: date,
+            account: parts[1],
+            sourceFile: sourceFile,
+            line: line
+        ))
+    }
+
     private func parseTransaction(
         id: Int,
         remainder: String,
@@ -434,6 +729,96 @@ final class BeancountLedgerParser {
             return nil
         }
         return prefix
+    }
+
+    private func parseMetadata(_ line: String) -> (key: String, value: String?)? {
+        guard let firstToken = line.split(whereSeparator: \.isWhitespace).first,
+              firstToken.hasSuffix(":") else {
+            return nil
+        }
+        let key = String(firstToken.dropLast())
+        let pattern = #"^[A-Za-z][A-Za-z0-9_-]*$"#
+        guard key.range(of: pattern, options: .regularExpression) != nil else { return nil }
+
+        let valueStart = line.index(line.startIndex, offsetBy: firstToken.count)
+        let rawValue = line[valueStart...].trimmingCharacters(in: .whitespaces)
+        guard !rawValue.isEmpty else { return (key, nil) }
+        return (key, unquoted(rawValue))
+    }
+
+    private func parseTagStackDirective(_ line: String, keyword: String) -> String? {
+        guard line.hasPrefix("\(keyword) ") else { return nil }
+        return parseMarkers(in: line, prefix: "#").first
+    }
+
+    private func parseMarkers(in line: String, prefix: Character) -> [String] {
+        let scrubbed = removingQuotedSegments(from: line)
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_/."))
+        var markers: [String] = []
+        var index = scrubbed.startIndex
+
+        while index < scrubbed.endIndex {
+            guard scrubbed[index] == prefix else {
+                index = scrubbed.index(after: index)
+                continue
+            }
+
+            var markerIndex = scrubbed.index(after: index)
+            var value = ""
+            while markerIndex < scrubbed.endIndex {
+                let character = scrubbed[markerIndex]
+                guard character.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { break }
+                value.append(character)
+                markerIndex = scrubbed.index(after: markerIndex)
+            }
+            if !value.isEmpty {
+                markers.append(value)
+            }
+            index = markerIndex
+        }
+
+        return markers
+    }
+
+    private func removingQuotedSegments(from line: String) -> String {
+        var result = ""
+        var inQuote = false
+        var isEscaped = false
+
+        for character in line {
+            if isEscaped {
+                isEscaped = false
+                continue
+            }
+            if character == "\\" {
+                isEscaped = true
+                continue
+            }
+            if character == "\"" {
+                inQuote.toggle()
+                continue
+            }
+            if !inQuote {
+                result.append(character)
+            }
+        }
+
+        return result
+    }
+
+    private func unquoted(_ value: String) -> String {
+        guard value.count >= 2,
+              value.first == "\"",
+              value.last == "\"" else {
+            return value
+        }
+        let start = value.index(after: value.startIndex)
+        let end = value.index(before: value.endIndex)
+        return String(value[start..<end])
+    }
+
+    private func leadingWhitespaceCount(_ line: String) -> Int {
+        line.prefix { $0.isWhitespace }.count
     }
 
     private func quotedStrings(in line: String) -> [String] {

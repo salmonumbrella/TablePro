@@ -5,7 +5,7 @@ description: Open Beancount ledgers with TablePro
 
 # Beancount
 
-TablePro opens `.beancount` ledgers as read-only, file-based connections. If the Beancount plugin is not installed yet, TablePro prompts you to download it before opening the ledger. The driver projects transactions, postings, accounts, prices, balances, and source files into SQL tables for browsing and exports.
+TablePro opens `.beancount` ledgers as read-only, file-based connections. If the Beancount plugin is not installed yet, TablePro prompts you to download it before opening the ledger. The driver projects transactions, postings, accounts, prices, balances, richer directives, metadata, validation diagnostics, and source files into SQL tables for browsing and exports.
 
 The plugin also supports BQL queries through its packaged `rustledger` helper.
 
@@ -38,12 +38,29 @@ See [Connection URL Reference](/databases/connection-urls) for all parameters.
 
 | Table | Contents |
 |-------|----------|
-| `transactions` | Transaction date, flag, payee, narration, source file, and line |
-| `postings` | Posting account, amount, commodity, source file, and line |
+| `transactions` | Transaction date, flag, payee, narration, source file, line, and source location |
+| `postings` | Posting account, amount, commodity, source file, line, and source location |
 | `accounts` | Opened accounts and declared currencies |
 | `prices` | Price directives |
 | `balances` | Balance directives |
+| `commodities` | Commodity directives |
+| `documents` | Document directives and attached filenames |
+| `notes` | Account notes |
+| `events` | Event name/value directives |
+| `pads` | Pad directives and source accounts |
+| `closes` | Close directives |
+| `transaction_metadata` | Transaction metadata key/value pairs |
+| `posting_metadata` | Posting metadata key/value pairs |
+| `transaction_tags` | Transaction tags, including active tag stack entries |
+| `transaction_links` | Transaction links |
+| `diagnostics` | Validation diagnostics from `rustledger check` |
 | `source_files` | Parsed ledger and include files |
+
+Rows with source positions include `source_file`, `line`, and `source_location` columns. `source_location` is formatted as `path:line` so it can be copied, filtered, or exported directly.
+
+## Diagnostics
+
+The `diagnostics` table contains structured validation output from `rustledger check` when the packaged helper is available. It includes file, line, source location, column, severity, phase, diagnostic code, and message columns. If validation is unavailable, the table remains empty and the ledger can still be browsed.
 
 ## Includes
 

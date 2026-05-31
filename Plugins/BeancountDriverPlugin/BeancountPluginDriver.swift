@@ -49,6 +49,24 @@ private struct BeancountSourceSignature: Equatable {
     let fileSize: UInt64?
 }
 
+private struct BeancountDiagnostic {
+    let id: Int
+    let file: String?
+    let line: Int?
+    let column: Int?
+    let endLine: Int?
+    let endColumn: Int?
+    let severity: String?
+    let phase: String?
+    let code: String?
+    let message: String?
+
+    var sourceLocation: String? {
+        guard let file, let line else { return nil }
+        return "\(file):\(line)"
+    }
+}
+
 final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
     private let config: DriverConnectionConfig
     private let lock = NSLock()
@@ -82,7 +100,7 @@ final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
         }
 
         do {
-            try Self.load(parsed, into: handle)
+            try Self.load(parsed, into: handle, ledgerURL: fileURL)
         } catch {
             sqlite3_close(handle)
             throw error
@@ -447,7 +465,7 @@ final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
         }
 
         do {
-            try Self.load(parsed, into: handle)
+            try Self.load(parsed, into: handle, ledgerURL: ledgerURL)
         } catch {
             sqlite3_close(handle)
             throw error
@@ -581,7 +599,85 @@ final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
         return String(describing: value)
     }
 
-    private static func load(_ ledger: BeancountLedger, into db: OpaquePointer) throws {
+    private static func validationDiagnostics(for ledgerURL: URL) -> [BeancountDiagnostic] {
+        do {
+            let rustledgerPath = try rustledgerExecutablePath()
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: rustledgerPath)
+            process.arguments = ["check", "-f", "json", ledgerURL.path]
+
+            let stdout = Pipe()
+            let stderr = Pipe()
+            process.standardOutput = stdout
+            process.standardError = stderr
+
+            let outputCollector = PipeDataCollector()
+            let errorCollector = PipeDataCollector()
+            let readers = DispatchGroup()
+            readers.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                outputCollector.set(stdout.fileHandleForReading.readDataToEndOfFile())
+                readers.leave()
+            }
+            readers.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                errorCollector.set(stderr.fileHandleForReading.readDataToEndOfFile())
+                readers.leave()
+            }
+
+            try process.run()
+            process.waitUntilExit()
+            readers.wait()
+
+            let output = outputCollector.data
+            if !output.isEmpty {
+                return try decodeRustledgerCheckOutput(output)
+            }
+            let errorOutput = errorCollector.data
+            guard !errorOutput.isEmpty else {
+                return []
+            }
+            return try decodeRustledgerCheckOutput(errorOutput)
+        } catch {
+            return []
+        }
+    }
+
+    private static func decodeRustledgerCheckOutput(_ data: Data) throws -> [BeancountDiagnostic] {
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let dictionary = object as? [String: Any],
+              let rawDiagnostics = dictionary["diagnostics"] as? [[String: Any]] else {
+            return []
+        }
+
+        return rawDiagnostics.enumerated().map { index, raw in
+            BeancountDiagnostic(
+                id: index + 1,
+                file: raw["file"] as? String,
+                line: intValue(raw["line"]),
+                column: intValue(raw["column"]),
+                endLine: intValue(raw["end_line"]),
+                endColumn: intValue(raw["end_column"]),
+                severity: raw["severity"] as? String,
+                phase: raw["phase"] as? String,
+                code: raw["code"] as? String,
+                message: raw["message"] as? String
+            )
+        }
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let number = value as? NSNumber {
+            return number.intValue
+        }
+        if let string = value as? String {
+            return Int(string)
+        }
+        return nil
+    }
+
+    private static func load(_ ledger: BeancountLedger, into db: OpaquePointer, ledgerURL: URL) throws {
+        let diagnostics = validationDiagnostics(for: ledgerURL)
         try exec(db, """
             CREATE TABLE transactions (
                 id INTEGER PRIMARY KEY,
@@ -590,7 +686,8 @@ final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
                 payee TEXT,
                 narration TEXT,
                 source_file TEXT NOT NULL,
-                line INTEGER NOT NULL
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
             );
             CREATE TABLE postings (
                 id INTEGER PRIMARY KEY,
@@ -600,14 +697,16 @@ final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
                 amount DECIMAL,
                 commodity TEXT,
                 source_file TEXT NOT NULL,
-                line INTEGER NOT NULL
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
             );
             CREATE TABLE accounts (
                 name TEXT PRIMARY KEY,
                 open_date DATE NOT NULL,
                 currencies TEXT,
                 source_file TEXT NOT NULL,
-                line INTEGER NOT NULL
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
             );
             CREATE TABLE prices (
                 id INTEGER PRIMARY KEY,
@@ -616,7 +715,8 @@ final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
                 amount DECIMAL NOT NULL,
                 currency TEXT NOT NULL,
                 source_file TEXT NOT NULL,
-                line INTEGER NOT NULL
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
             );
             CREATE TABLE balances (
                 id INTEGER PRIMARY KEY,
@@ -625,7 +725,102 @@ final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
                 amount DECIMAL NOT NULL,
                 commodity TEXT NOT NULL,
                 source_file TEXT NOT NULL,
-                line INTEGER NOT NULL
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
+            );
+            CREATE TABLE commodities (
+                id INTEGER PRIMARY KEY,
+                date DATE NOT NULL,
+                commodity TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
+            );
+            CREATE TABLE documents (
+                id INTEGER PRIMARY KEY,
+                date DATE NOT NULL,
+                account TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
+            );
+            CREATE TABLE notes (
+                id INTEGER PRIMARY KEY,
+                date DATE NOT NULL,
+                account TEXT NOT NULL,
+                comment TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
+            );
+            CREATE TABLE events (
+                id INTEGER PRIMARY KEY,
+                date DATE NOT NULL,
+                name TEXT NOT NULL,
+                value TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
+            );
+            CREATE TABLE pads (
+                id INTEGER PRIMARY KEY,
+                date DATE NOT NULL,
+                account TEXT NOT NULL,
+                source_account TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
+            );
+            CREATE TABLE closes (
+                id INTEGER PRIMARY KEY,
+                date DATE NOT NULL,
+                account TEXT NOT NULL,
+                source_file TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
+            );
+            CREATE TABLE transaction_metadata (
+                id INTEGER PRIMARY KEY,
+                transaction_id INTEGER NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT,
+                source_file TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
+            );
+            CREATE TABLE posting_metadata (
+                id INTEGER PRIMARY KEY,
+                posting_id INTEGER NOT NULL,
+                transaction_id INTEGER NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT,
+                source_file TEXT NOT NULL,
+                line INTEGER NOT NULL,
+                source_location TEXT NOT NULL
+            );
+            CREATE TABLE transaction_tags (
+                id INTEGER PRIMARY KEY,
+                transaction_id INTEGER NOT NULL,
+                tag TEXT NOT NULL
+            );
+            CREATE TABLE transaction_links (
+                id INTEGER PRIMARY KEY,
+                transaction_id INTEGER NOT NULL,
+                link TEXT NOT NULL
+            );
+            CREATE TABLE diagnostics (
+                id INTEGER PRIMARY KEY,
+                file TEXT,
+                line INTEGER,
+                source_location TEXT,
+                column INTEGER,
+                end_line INTEGER,
+                end_column INTEGER,
+                severity TEXT,
+                phase TEXT,
+                code TEXT,
+                message TEXT
             );
             CREATE TABLE source_files (
                 path TEXT PRIMARY KEY
@@ -634,8 +829,8 @@ final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
 
         for transaction in ledger.transactions {
             try insert(db, sql: """
-                INSERT INTO transactions (id, date, flag, payee, narration, source_file, line)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO transactions (id, date, flag, payee, narration, source_file, line, source_location)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, values: [
                     String(transaction.id),
                     transaction.date,
@@ -643,13 +838,16 @@ final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
                     transaction.payee,
                     transaction.narration,
                     transaction.sourceFile.path,
-                    String(transaction.line)
+                    String(transaction.line),
+                    transaction.sourceLocation
                 ])
         }
         for posting in ledger.postings {
             try insert(db, sql: """
-                INSERT INTO postings (id, transaction_id, date, account, amount, commodity, source_file, line)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO postings (
+                    id, transaction_id, date, account, amount, commodity, source_file, line, source_location
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, values: [
                     String(posting.id),
                     String(posting.transactionId),
@@ -658,25 +856,27 @@ final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
                     posting.amount,
                     posting.commodity,
                     posting.sourceFile.path,
-                    String(posting.line)
+                    String(posting.line),
+                    posting.sourceLocation
                 ])
         }
         for account in ledger.accounts {
             try insert(db, sql: """
-                INSERT INTO accounts (name, open_date, currencies, source_file, line)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO accounts (name, open_date, currencies, source_file, line, source_location)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """, values: [
                     account.name,
                     account.openDate,
                     account.currencies,
                     account.sourceFile.path,
-                    String(account.line)
+                    String(account.line),
+                    account.sourceLocation
                 ])
         }
         for price in ledger.prices {
             try insert(db, sql: """
-                INSERT INTO prices (id, date, commodity, amount, currency, source_file, line)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO prices (id, date, commodity, amount, currency, source_file, line, source_location)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, values: [
                     String(price.id),
                     price.date,
@@ -684,13 +884,14 @@ final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
                     price.amount,
                     price.currency,
                     price.sourceFile.path,
-                    String(price.line)
+                    String(price.line),
+                    price.sourceLocation
                 ])
         }
         for balance in ledger.balances {
             try insert(db, sql: """
-                INSERT INTO balances (id, date, account, amount, commodity, source_file, line)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO balances (id, date, account, amount, commodity, source_file, line, source_location)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, values: [
                     String(balance.id),
                     balance.date,
@@ -698,7 +899,155 @@ final class BeancountPluginDriver: PluginDatabaseDriver, @unchecked Sendable {
                     balance.amount,
                     balance.commodity,
                     balance.sourceFile.path,
-                    String(balance.line)
+                    String(balance.line),
+                    balance.sourceLocation
+                ])
+        }
+        for commodity in ledger.commodities {
+            try insert(db, sql: """
+                INSERT INTO commodities (id, date, commodity, source_file, line, source_location)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, values: [
+                    String(commodity.id),
+                    commodity.date,
+                    commodity.commodity,
+                    commodity.sourceFile.path,
+                    String(commodity.line),
+                    commodity.sourceLocation
+                ])
+        }
+        for document in ledger.documents {
+            try insert(db, sql: """
+                INSERT INTO documents (id, date, account, filename, source_file, line, source_location)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, values: [
+                    String(document.id),
+                    document.date,
+                    document.account,
+                    document.filename,
+                    document.sourceFile.path,
+                    String(document.line),
+                    document.sourceLocation
+                ])
+        }
+        for note in ledger.notes {
+            try insert(db, sql: """
+                INSERT INTO notes (id, date, account, comment, source_file, line, source_location)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, values: [
+                    String(note.id),
+                    note.date,
+                    note.account,
+                    note.comment,
+                    note.sourceFile.path,
+                    String(note.line),
+                    note.sourceLocation
+                ])
+        }
+        for event in ledger.events {
+            try insert(db, sql: """
+                INSERT INTO events (id, date, name, value, source_file, line, source_location)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, values: [
+                    String(event.id),
+                    event.date,
+                    event.name,
+                    event.value,
+                    event.sourceFile.path,
+                    String(event.line),
+                    event.sourceLocation
+                ])
+        }
+        for pad in ledger.pads {
+            try insert(db, sql: """
+                INSERT INTO pads (id, date, account, source_account, source_file, line, source_location)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, values: [
+                    String(pad.id),
+                    pad.date,
+                    pad.account,
+                    pad.sourceAccount,
+                    pad.sourceFile.path,
+                    String(pad.line),
+                    pad.sourceLocation
+                ])
+        }
+        for close in ledger.closes {
+            try insert(db, sql: """
+                INSERT INTO closes (id, date, account, source_file, line, source_location)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """, values: [
+                    String(close.id),
+                    close.date,
+                    close.account,
+                    close.sourceFile.path,
+                    String(close.line),
+                    close.sourceLocation
+                ])
+        }
+        for metadata in ledger.transactionMetadata {
+            try insert(db, sql: """
+                INSERT INTO transaction_metadata (
+                    id, transaction_id, key, value, source_file, line, source_location
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, values: [
+                    String(metadata.id),
+                    String(metadata.transactionId),
+                    metadata.key,
+                    metadata.value,
+                    metadata.sourceFile.path,
+                    String(metadata.line),
+                    metadata.sourceLocation
+                ])
+        }
+        for metadata in ledger.postingMetadata {
+            try insert(db, sql: """
+                INSERT INTO posting_metadata (
+                    id, posting_id, transaction_id, key, value, source_file, line, source_location
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, values: [
+                    String(metadata.id),
+                    String(metadata.postingId),
+                    String(metadata.transactionId),
+                    metadata.key,
+                    metadata.value,
+                    metadata.sourceFile.path,
+                    String(metadata.line),
+                    metadata.sourceLocation
+                ])
+        }
+        for tag in ledger.transactionTags {
+            try insert(db, sql: """
+                INSERT INTO transaction_tags (id, transaction_id, tag)
+                VALUES (?, ?, ?)
+                """, values: [String(tag.id), String(tag.transactionId), tag.tag])
+        }
+        for link in ledger.transactionLinks {
+            try insert(db, sql: """
+                INSERT INTO transaction_links (id, transaction_id, link)
+                VALUES (?, ?, ?)
+                """, values: [String(link.id), String(link.transactionId), link.link])
+        }
+        for diagnostic in diagnostics {
+            try insert(db, sql: """
+                INSERT INTO diagnostics (
+                    id, file, line, source_location, column, end_line, end_column, severity, phase, code, message
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, values: [
+                    String(diagnostic.id),
+                    diagnostic.file,
+                    diagnostic.line.map(String.init),
+                    diagnostic.sourceLocation,
+                    diagnostic.column.map(String.init),
+                    diagnostic.endLine.map(String.init),
+                    diagnostic.endColumn.map(String.init),
+                    diagnostic.severity,
+                    diagnostic.phase,
+                    diagnostic.code,
+                    diagnostic.message
                 ])
         }
         for sourceFile in ledger.sourceFiles {

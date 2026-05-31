@@ -892,7 +892,10 @@ extension PluginMetadataRegistry {
                     defaultPrimaryKeyColumn: nil,
                     immutableColumns: [
                         "id", "transaction_id", "date", "flag", "payee", "narration",
-                        "account", "amount", "commodity", "currency", "source_file", "line"
+                        "posting_id", "account", "source_account", "amount", "commodity", "currency",
+                        "filename", "comment", "name", "value", "key", "tag", "link",
+                        "source_file", "line", "source_location", "column", "end_line", "end_column",
+                        "severity", "phase", "code", "message"
                     ],
                     systemDatabaseNames: [],
                     systemSchemaNames: [],

@@ -113,4 +113,54 @@ struct BeancountLedgerParserTests {
 
         #expect(parsed.postings.map(\.account) == ["Assets:Bank:Checking", "Expenses:Food"])
     }
+
+    @Test("parses rich directives, metadata, tags, and links")
+    func parsesRichDirectivesMetadataTagsAndLinks() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("beancount-parser-rich-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+
+        let ledger = tempDirectory.appendingPathComponent("main.beancount")
+        try """
+        pushtag #trip
+
+        2024-01-01 commodity USD
+        2024-01-02 open Assets:Bank:Checking USD
+        2024-01-03 close Liabilities:CreditCard
+        2024-01-04 pad Assets:Bank:Checking Equity:Opening-Balances
+        2024-01-05 document Assets:Bank:Checking "receipts/january.pdf"
+        2024-01-06 note Assets:Bank:Checking "Opened checking account"
+        2024-01-07 event "location" "Vancouver"
+
+        2024-01-15 * "Grocery Store" "Weekly shop" #tax ^invoice-123
+          receipt: "receipt-123.pdf"
+          imported: TRUE
+          Assets:Bank:Checking  -100.00 USD
+            statement_line: "42"
+          Expenses:Food          100.00 USD
+
+        poptag #trip
+        """.write(to: ledger, atomically: true, encoding: .utf8)
+
+        let parsed = try BeancountLedgerParser().parse(fileURL: ledger)
+
+        #expect(parsed.commodities.map(\.commodity) == ["USD"])
+        #expect(parsed.closes.map(\.account) == ["Liabilities:CreditCard"])
+        #expect(parsed.pads.map(\.account) == ["Assets:Bank:Checking"])
+        #expect(parsed.pads.map(\.sourceAccount) == ["Equity:Opening-Balances"])
+        #expect(parsed.documents.map(\.filename) == ["receipts/january.pdf"])
+        #expect(parsed.notes.map(\.comment) == ["Opened checking account"])
+        #expect(parsed.events.map(\.name) == ["location"])
+        #expect(parsed.events.map(\.value) == ["Vancouver"])
+        #expect(parsed.transactionMetadata.map(\.key) == ["receipt", "imported"])
+        #expect(parsed.transactionMetadata.map(\.value) == ["receipt-123.pdf", "TRUE"])
+        #expect(parsed.postingMetadata.map(\.key) == ["statement_line"])
+        #expect(parsed.postingMetadata.map(\.value) == ["42"])
+        #expect(parsed.transactionTags.map(\.tag).sorted() == ["tax", "trip"])
+        #expect(parsed.transactionLinks.map(\.link) == ["invoice-123"])
+        #expect(parsed.transactions.first?.sourceLocation.hasSuffix("main.beancount:11") == true)
+    }
 }
